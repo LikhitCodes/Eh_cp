@@ -196,6 +196,18 @@ class ConnectorStatusOut(BaseModel):
     last_sync_at: Optional[datetime]
     last_error: Optional[str]
     use_simulated: bool
+    connected_url: Optional[str] = None
+
+
+class ConnectSourceRequest(BaseModel):
+    url: str
+
+
+class ConnectSourceResponse(BaseModel):
+    connector_type: str
+    connected_url: Optional[str] = None
+    status: str
+
 
 
 class CaseCreate(BaseModel):

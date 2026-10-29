@@ -74,6 +74,15 @@ button:disabled{opacity:.5;cursor:not-allowed;transform:none!important;}
 .btn-demo{color:#1a1a1a;background:var(--accent);animation:pulse-glow 2s infinite;}
 @keyframes pulse-glow{0%,100%{box-shadow:0 0 0 0 rgba(200,230,74,.3);}50%{box-shadow:0 0 16px 2px rgba(200,230,74,.2);}}
 
+/* ─── SOURCE SWITCHER ─── */
+.source-banner{display:flex;align-items:center;justify-content:space-between;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:8px 14px;margin-bottom:14px;flex-wrap:wrap;gap:10px;box-shadow:0 1px 3px rgba(0,0,0,.02);}
+.source-pills{display:inline-flex;background:var(--surface2);padding:3px;border-radius:9px;border:1px solid var(--border);gap:4px;}
+.source-pill{padding:5px 12px;border-radius:6px;font-size:11px;font-weight:600;background:transparent;color:var(--muted);border:0;cursor:pointer;transition:all .2s;display:inline-flex;align-items:center;}
+.source-pill:hover{color:var(--ink);background:rgba(200,230,74,.05);}
+.source-pill.active{background:var(--accent);color:#1a1a1a;box-shadow:0 1px 4px rgba(0,0,0,.1);}
+.source-pill .pill-badge{font-size:10px;padding:1px 6px;border-radius:10px;background:rgba(0,0,0,.08);margin-left:5px;font-family:'JetBrains Mono',monospace;}
+.source-pill.active .pill-badge{background:rgba(0,0,0,.18);color:#000;}
+
 /* ─── METRICS ─── */
 .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;}
 .metric{border-radius:12px;padding:14px;border:1px solid transparent;}

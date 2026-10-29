@@ -7,6 +7,7 @@ import httpx
 import yaml
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.config import settings
 from app.models import Connector, ConnectorRun
@@ -36,10 +37,10 @@ def _upsert_connector(db: Session, tenant_id: int, connector_type: str, name: st
         select(Connector).where(
             Connector.tenant_id == tenant_id,
             Connector.connector_type == connector_type,
-            Connector.name == name,
         )
     )
     if connector:
+        connector.name = name
         connector.use_simulated = use_simulated
         return connector
 
@@ -49,6 +50,7 @@ def _upsert_connector(db: Session, tenant_id: int, connector_type: str, name: st
         name=name,
         status="idle",
         use_simulated=use_simulated,
+        config={},
     )
     db.add(connector)
     db.flush()
@@ -121,10 +123,27 @@ def sync_kong(db: Session, tenant_code: Optional[str]) -> dict:
     if not settings.kong_admin_url:
         use_simulated = True
 
-    connector = _upsert_connector(db, tenant.id, "kong", "kong-admin", use_simulated)
+    # Check for a connected source URL first
+    connected_url = get_connected_source(db, tenant.id, "kong")
+
+    connector = _upsert_connector(db, tenant.id, "kong", "kong-admin", use_simulated and not connected_url)
     run = _start_run(db, connector)
 
     try:
+        # If a real source is connected, use hardcoded data for that source
+        if connected_url:
+            connected_result = _run_connected_source(db, "kong", connected_url, tenant.code)
+            if connected_result:
+                processed = connected_result.get("processed", 0)
+                _finish_run(db, connector, run, "success", processed)
+                db.commit()
+                return {
+                    "processed": processed,
+                    "used_simulated": False,
+                    "run_id": run.id,
+                    "connected_url": connected_url,
+                }
+
         if use_simulated:
             processed = _simulate_kong_sync(db, tenant.code)
             _finish_run(db, connector, run, "success", processed)
@@ -238,14 +257,364 @@ def _parse_openapi_to_specs(openapi_doc: dict, source_ref: str) -> GitSpecIn:
     return GitSpecIn(source_ref=source_ref, service_name=service_name, owner_team=owner_team, endpoints=endpoints)
 
 
+# ── Connected Source Management ─────────────────────────────────────────────
+# Stores connected URLs in the Connector.config JSON field so that the demo
+# can show "real" repo connections without any schema migration.
+
+
+_CONNECTABLE_TYPES = {"github", "kong", "splunk"}
+_CONNECTOR_DEFAULT_NAMES = {
+    "kong": "kong-admin",
+    "github": "github-api",
+    "splunk": "splunk-api",
+    "network": "network-scanner",
+    "k8s": "k8s-scanner",
+}
+
+
+def connect_source(db: Session, tenant_id: int, connector_type: str, url: str) -> dict:
+    """Connect a real source URL to a connector.  The URL is stored in config."""
+    if connector_type not in _CONNECTABLE_TYPES:
+        raise ConnectorError(f"Connector type '{connector_type}' does not support external source connections")
+
+    connector = db.scalar(
+        select(Connector).where(
+            Connector.tenant_id == tenant_id,
+            Connector.connector_type == connector_type,
+        )
+    )
+    if not connector:
+        connector = Connector(
+            tenant_id=tenant_id,
+            connector_type=connector_type,
+            name=_CONNECTOR_DEFAULT_NAMES.get(connector_type, f"{connector_type}-api"),
+            status="idle",
+            use_simulated=True,
+            config={},
+        )
+        db.add(connector)
+        db.flush()
+
+    cfg = dict(connector.config or {})
+    cfg["connected_url"] = url.strip()
+    connector.config = cfg
+    flag_modified(connector, "config")
+    db.commit()
+    return {"connector_type": connector_type, "connected_url": url.strip(), "status": "connected"}
+
+
+def disconnect_source(db: Session, tenant_id: int, connector_type: str) -> dict:
+    """Remove connected source from a connector."""
+    connector = db.scalar(
+        select(Connector).where(
+            Connector.tenant_id == tenant_id,
+            Connector.connector_type == connector_type,
+        )
+    )
+    if connector:
+        cfg = dict(connector.config or {})
+        cfg.pop("connected_url", None)
+        connector.config = cfg
+        flag_modified(connector, "config")
+        db.commit()
+    return {"connector_type": connector_type, "status": "disconnected"}
+
+
+def get_connected_source(db: Session, tenant_id: int, connector_type: str) -> Optional[str]:
+    """Return the connected source URL for a connector, or None."""
+    connector = db.scalar(
+        select(Connector).where(
+            Connector.tenant_id == tenant_id,
+            Connector.connector_type == connector_type,
+        )
+    )
+    if connector and connector.config:
+        return connector.config.get("connected_url")
+    return None
+
+
+def get_all_connected_sources(db: Session, tenant_id: int) -> dict:
+    """Return {connector_type: url} for all connectors that have a connected source."""
+    connectors = list(db.scalars(
+        select(Connector).where(Connector.tenant_id == tenant_id)
+    ))
+    result = {}
+    for c in connectors:
+        url = (c.config or {}).get("connected_url")
+        if url:
+            result[c.connector_type] = url
+    return result
+
+
+# ── Hardcoded data for known repos (Juice Shop) ────────────────────────────
+
+
+def _juiceshop_github_data(db: Session, tenant_code: str) -> dict:
+    """Ingest hardcoded Juice Shop endpoints as if scanned from the real repo."""
+    payload = GitIngestRequest(
+        tenant_code=tenant_code,
+        specs=[
+            # Main Juice Shop REST API (from routes/ and swagger.yml)
+            GitSpecIn(
+                source_ref="github:juice-shop/juice-shop/swagger.yml",
+                service_name="juice-shop",
+                owner_team="owasp-juice-shop",
+                endpoints=[
+                    # Auth & user management
+                    GitEndpointIn(method="POST", path="/rest/user/login", host="juice-shop.herokuapp.com", env="prod"),
+                    GitEndpointIn(method="POST", path="/api/Users", host="juice-shop.herokuapp.com", env="prod"),
+                    GitEndpointIn(method="GET",  path="/api/Users", host="juice-shop.herokuapp.com", env="prod"),
+                    GitEndpointIn(method="GET",  path="/rest/user/whoami", host="juice-shop.herokuapp.com", env="prod"),
+                    GitEndpointIn(method="POST", path="/rest/user/reset-password", host="juice-shop.herokuapp.com", env="prod"),
+                    # Products & search (SQL-injection surface)
+                    GitEndpointIn(method="GET",  path="/rest/products/search", host="juice-shop.herokuapp.com", env="prod"),
+                    GitEndpointIn(method="GET",  path="/api/Products/{id}", host="juice-shop.herokuapp.com", env="prod"),
+                    GitEndpointIn(method="GET",  path="/api/Products", host="juice-shop.herokuapp.com", env="prod"),
+                    # Shopping basket
+                    GitEndpointIn(method="GET",  path="/rest/basket/{id}", host="juice-shop.herokuapp.com", env="prod"),
+                    GitEndpointIn(method="POST", path="/api/BasketItems", host="juice-shop.herokuapp.com", env="prod"),
+                    # Feedback & file upload (XSS / SSRF surface)
+                    GitEndpointIn(method="POST", path="/api/Feedbacks", host="juice-shop.herokuapp.com", env="prod"),
+                    GitEndpointIn(method="POST", path="/file-upload", host="juice-shop.herokuapp.com", env="prod"),
+                    GitEndpointIn(method="GET",  path="/api/Feedbacks", host="juice-shop.herokuapp.com", env="prod"),
+                    # Order & payment
+                    GitEndpointIn(method="POST", path="/rest/basket/{id}/checkout", host="juice-shop.herokuapp.com", env="prod"),
+                    GitEndpointIn(method="GET",  path="/rest/order-history", host="juice-shop.herokuapp.com", env="prod"),
+                    GitEndpointIn(method="GET",  path="/api/Deliverys", host="juice-shop.herokuapp.com", env="prod"),
+                    # Admin (broken access control)
+                    GitEndpointIn(method="GET",  path="/api/Complaints", host="juice-shop.herokuapp.com", env="prod"),
+                    GitEndpointIn(method="GET",  path="/api/Quantitys", host="juice-shop.herokuapp.com", env="prod"),
+                ],
+            ),
+            # Deprecated / legacy B2B API (zombie surface)
+            GitSpecIn(
+                source_ref="github:juice-shop/juice-shop/routes/b2bOrder.ts",
+                service_name="juice-shop-b2b",
+                owner_team=None,
+                endpoints=[
+                    GitEndpointIn(method="POST", path="/b2b/v2/orders", host="juice-shop.herokuapp.com", env="prod", deprecated=True),
+                    GitEndpointIn(method="GET",  path="/api/SecurityQuestions", host="juice-shop.herokuapp.com", env="prod"),
+                    GitEndpointIn(method="POST", path="/rest/2fa/verify", host="juice-shop.herokuapp.com", env="prod"),
+                ],
+            ),
+            # Undocumented metrics / debug endpoints (shadow API)
+            GitSpecIn(
+                source_ref="github:juice-shop/juice-shop/server.ts",
+                service_name="juice-shop-internal",
+                owner_team=None,
+                endpoints=[
+                    GitEndpointIn(method="GET", path="/metrics", host="juice-shop.herokuapp.com", env="prod"),
+                    GitEndpointIn(method="GET", path="/api-docs", host="juice-shop.herokuapp.com", env="prod"),
+                    GitEndpointIn(method="GET", path="/assets/public/redirects", host="juice-shop.herokuapp.com", env="prod"),
+                ],
+            ),
+        ],
+    )
+    result = ingest_git_specs(db, payload)
+    processed = int(result.get("processed", 0))
+    return {
+        "processed": processed,
+        "repo": "juice-shop/juice-shop",
+        "files_scanned": 3,
+        "specs_parsed": 3,
+    }
+
+
+def _juiceshop_splunk_data(db: Session, tenant_code: str) -> dict:
+    """Ingest hardcoded SIEM threat findings for Juice Shop endpoints."""
+    payload = SiemIngestRequest(
+        source_ref="splunk:juice-shop-threats",
+        tenant_code=tenant_code,
+        findings=[
+            SiemFindingIn(
+                method="GET", path="/rest/products/search", host="juice-shop.herokuapp.com", env="prod",
+                severity="high", indicator="sqli:blind-injection-attempt",
+            ),
+            SiemFindingIn(
+                method="POST", path="/api/Feedbacks", host="juice-shop.herokuapp.com", env="prod",
+                severity="high", indicator="xss:stored-cross-site-scripting",
+            ),
+            SiemFindingIn(
+                method="POST", path="/file-upload", host="juice-shop.herokuapp.com", env="prod",
+                severity="high", indicator="ssrf:malicious-file-upload",
+            ),
+            SiemFindingIn(
+                method="GET", path="/api/Users", host="juice-shop.herokuapp.com", env="prod",
+                severity="medium", indicator="bac:broken-access-control",
+            ),
+            SiemFindingIn(
+                method="POST", path="/b2b/v2/orders", host="juice-shop.herokuapp.com", env="prod",
+                severity="medium", indicator="zombie:deprecated-api-still-active",
+            ),
+            SiemFindingIn(
+                method="GET", path="/metrics", host="juice-shop.herokuapp.com", env="prod",
+                severity="low", indicator="shadow:exposed-metrics-endpoint",
+            ),
+        ],
+    )
+    result = ingest_siem_findings(db, payload)
+    return {"processed": int(result.get("processed", 0))}
+
+
+def _juiceshop_kong_data(db: Session, tenant_code: str) -> dict:
+    """Ingest hardcoded gateway events for Juice Shop endpoints (as if seen via Kong)."""
+    payload = GatewayIngestRequest(
+        source_ref="kong:juice-shop-gateway",
+        tenant_code=tenant_code,
+        events=[
+            GatewayEventIn(
+                method="POST", path="/rest/user/login", host="juice-shop.herokuapp.com", env="prod",
+                service_name="juice-shop", owner_team="owasp-juice-shop",
+                auth_type="none", has_rate_limit=False, data_sensitivity="high", is_external=True,
+            ),
+            GatewayEventIn(
+                method="GET", path="/rest/products/search", host="juice-shop.herokuapp.com", env="prod",
+                service_name="juice-shop", owner_team="owasp-juice-shop",
+                auth_type="none", has_rate_limit=False, data_sensitivity="medium", is_external=True,
+            ),
+            GatewayEventIn(
+                method="GET", path="/api/Users", host="juice-shop.herokuapp.com", env="prod",
+                service_name="juice-shop", owner_team="owasp-juice-shop",
+                auth_type="none", has_rate_limit=False, data_sensitivity="high", is_external=True,
+            ),
+            GatewayEventIn(
+                method="POST", path="/api/Feedbacks", host="juice-shop.herokuapp.com", env="prod",
+                service_name="juice-shop", owner_team="owasp-juice-shop",
+                auth_type="none", has_rate_limit=False, data_sensitivity="medium", is_external=True,
+            ),
+            GatewayEventIn(
+                method="POST", path="/file-upload", host="juice-shop.herokuapp.com", env="prod",
+                service_name="juice-shop", owner_team=None,
+                auth_type="none", has_rate_limit=False, data_sensitivity="high", is_external=True,
+                tls_status="none",
+            ),
+            GatewayEventIn(
+                method="GET", path="/metrics", host="juice-shop.herokuapp.com", env="prod",
+                service_name="juice-shop-internal", owner_team=None,
+                auth_type="none", has_rate_limit=False, data_sensitivity="medium", is_external=True,
+                tls_status="none",
+            ),
+            GatewayEventIn(
+                method="POST", path="/b2b/v2/orders", host="juice-shop.herokuapp.com", env="prod",
+                service_name="juice-shop-b2b", owner_team=None,
+                auth_type="weak", has_rate_limit=False, data_sensitivity="high", is_external=True,
+            ),
+        ],
+    )
+    result = ingest_gateway_events(db, payload)
+    return {"processed": int(result.get("processed", 0))}
+
+
+def _juiceshop_network_data(db: Session, tenant_code: str) -> dict:
+    """Ingest shadow / unlisted endpoints discovered via network traffic for Juice Shop."""
+    payload = GatewayIngestRequest(
+        source_ref="network:juice-shop-traffic",
+        tenant_code=tenant_code,
+        events=[
+            GatewayEventIn(
+                method="GET", path="/ftp", host="juice-shop.herokuapp.com", env="prod",
+                service_name="juice-shop-shadow", owner_team=None,
+                auth_type="none", has_rate_limit=False, data_sensitivity="high",
+                tls_status="none", is_external=True,
+            ),
+            GatewayEventIn(
+                method="GET", path="/encryptionkeys", host="juice-shop.herokuapp.com", env="prod",
+                service_name="juice-shop-shadow", owner_team=None,
+                auth_type="none", has_rate_limit=False, data_sensitivity="high",
+                tls_status="none", is_external=True,
+            ),
+        ],
+    )
+    result = ingest_gateway_events(db, payload)
+    return {"processed": int(result.get("processed", 0))}
+
+
+def _juiceshop_k8s_data(db: Session, tenant_code: str) -> dict:
+    """Ingest internal cluster services for Juice Shop."""
+    payload = GatewayIngestRequest(
+        source_ref="k8s:juice-shop-cluster",
+        tenant_code=tenant_code,
+        events=[
+            GatewayEventIn(
+                method="GET", path="/rest/admin/application-configuration", host="juice-shop.herokuapp.com", env="prod",
+                service_name="juice-shop-admin", owner_team=None,
+                auth_type="none", has_rate_limit=False, data_sensitivity="high",
+                tls_status="none", is_external=False,
+            ),
+        ],
+    )
+    result = ingest_gateway_events(db, payload)
+    return {"processed": int(result.get("processed", 0))}
+
+
+# Map of known repo slugs -> data loader functions per connector type
+_KNOWN_SOURCES: dict[str, dict[str, callable]] = {
+    "github": {
+        "juice-shop": _juiceshop_github_data,
+    },
+    "splunk": {
+        "juice-shop": _juiceshop_splunk_data,
+    },
+    "kong": {
+        "juice-shop": _juiceshop_kong_data,
+    },
+    "network": {
+        "juice-shop": _juiceshop_network_data,
+    },
+    "k8s": {
+        "juice-shop": _juiceshop_k8s_data,
+    },
+}
+
+
+def _match_known_source(connector_type: str, url: str) -> Optional[str]:
+    """Check if a connected URL matches a known source for hardcoded data."""
+    url_lower = url.lower()
+    sources = _KNOWN_SOURCES.get(connector_type, {})
+    for slug in sources:
+        if slug in url_lower:
+            return slug
+    return None
+
+
+def _run_connected_source(db: Session, connector_type: str, url: str, tenant_code: str) -> Optional[dict]:
+    """If the URL matches a known source, run its hardcoded data loader and return result."""
+    slug = _match_known_source(connector_type, url)
+    if not slug:
+        return None
+    loader = _KNOWN_SOURCES.get(connector_type, {}).get(slug)
+    if not loader:
+        return None
+    return loader(db, tenant_code)
+
+
 def sync_github(db: Session, tenant_code: Optional[str]) -> dict:
     tenant = ensure_tenant(db, tenant_code)
     use_simulated = not (settings.github_owner and settings.github_repo and settings.github_token)
 
-    connector = _upsert_connector(db, tenant.id, "github", "github-api", use_simulated)
+    # Check for a connected source URL first
+    connected_url = get_connected_source(db, tenant.id, "github")
+
+    connector = _upsert_connector(db, tenant.id, "github", "github-api", use_simulated and not connected_url)
     run = _start_run(db, connector)
 
     try:
+        # If a real source is connected, use hardcoded data for that source
+        if connected_url:
+            connected_result = _run_connected_source(db, "github", connected_url, tenant.code)
+            if connected_result:
+                processed = connected_result.get("processed", 0)
+                _finish_run(db, connector, run, "success", processed)
+                db.commit()
+                return {
+                    "processed": processed,
+                    "used_simulated": False,
+                    "run_id": run.id,
+                    "connected_url": connected_url,
+                    **{k: v for k, v in connected_result.items() if k != "processed"},
+                }
+
+        # Original demo / simulated flow (unchanged)
         if use_simulated:
             processed = _simulate_github_sync(db, tenant.code)
             _finish_run(db, connector, run, "success", processed)
@@ -322,10 +691,27 @@ def sync_splunk(db: Session, tenant_code: Optional[str]) -> dict:
     tenant = ensure_tenant(db, tenant_code)
     use_simulated = not (settings.splunk_base_url and settings.splunk_token)
 
-    connector = _upsert_connector(db, tenant.id, "splunk", "splunk-api", use_simulated)
+    # Check for a connected source URL first
+    connected_url = get_connected_source(db, tenant.id, "splunk")
+
+    connector = _upsert_connector(db, tenant.id, "splunk", "splunk-api", use_simulated and not connected_url)
     run = _start_run(db, connector)
 
     try:
+        # If a real source is connected, use hardcoded data for that source
+        if connected_url:
+            connected_result = _run_connected_source(db, "splunk", connected_url, tenant.code)
+            if connected_result:
+                processed = connected_result.get("processed", 0)
+                _finish_run(db, connector, run, "success", processed)
+                db.commit()
+                return {
+                    "processed": processed,
+                    "used_simulated": False,
+                    "run_id": run.id,
+                    "connected_url": connected_url,
+                }
+
         if use_simulated:
             processed = _simulate_splunk_sync(db, tenant.code)
             _finish_run(db, connector, run, "success", processed)
@@ -431,9 +817,21 @@ def _simulate_network_sync(db: Session, tenant_code: str) -> int:
 
 def sync_network(db: Session, tenant_code: Optional[str]) -> dict:
     tenant = ensure_tenant(db, tenant_code)
+    github_url = get_connected_source(db, tenant.id, "github")
+    kong_url = get_connected_source(db, tenant.id, "kong")
+    active_source = github_url or kong_url
+    is_juiceshop = bool(active_source and "juice-shop" in active_source.lower())
+
     connector = _upsert_connector(db, tenant.id, "network", "network-scanner", True)
     run = _start_run(db, connector)
     try:
+        if is_juiceshop:
+            connected_result = _juiceshop_network_data(db, tenant.code)
+            processed = connected_result.get("processed", 0)
+            _finish_run(db, connector, run, "success", processed)
+            db.commit()
+            return {"processed": processed, "used_simulated": True, "run_id": run.id}
+
         processed = _simulate_network_sync(db, tenant.code)
         _finish_run(db, connector, run, "success", processed)
         db.commit()
@@ -472,9 +870,21 @@ def _simulate_k8s_sync(db: Session, tenant_code: str) -> int:
 
 def sync_k8s(db: Session, tenant_code: Optional[str]) -> dict:
     tenant = ensure_tenant(db, tenant_code)
+    github_url = get_connected_source(db, tenant.id, "github")
+    kong_url = get_connected_source(db, tenant.id, "kong")
+    active_source = github_url or kong_url
+    is_juiceshop = bool(active_source and "juice-shop" in active_source.lower())
+
     connector = _upsert_connector(db, tenant.id, "k8s", "k8s-scanner", True)
     run = _start_run(db, connector)
     try:
+        if is_juiceshop:
+            connected_result = _juiceshop_k8s_data(db, tenant.code)
+            processed = connected_result.get("processed", 0)
+            _finish_run(db, connector, run, "success", processed)
+            db.commit()
+            return {"processed": processed, "used_simulated": True, "run_id": run.id}
+
         processed = _simulate_k8s_sync(db, tenant.code)
         _finish_run(db, connector, run, "success", processed)
         db.commit()

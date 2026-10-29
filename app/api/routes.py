@@ -20,6 +20,8 @@ from app.schemas import (
     CaseCreate,
     CaseEvidenceOut,
     CaseOut,
+    ConnectSourceRequest,
+    ConnectSourceResponse,
     ConnectorStatusOut,
     ConnectorSyncResponse,
     EndpointOut,
@@ -37,6 +39,7 @@ from app.services.alerting import alert_remediation_executed, get_alert_history,
 from app.services.audit import create_audit_event
 from app.services.cases import create_case, get_case_with_artifacts, list_cases
 from app.services.governance import evaluate_all_compliance, evaluate_endpoint_compliance
+from app.services.connectors import connect_source, disconnect_source, get_all_connected_sources
 from app.services.ingestion import ingest_gateway_events, ingest_git_specs, ingest_siem_findings
 from app.services.jobs import claim_next_job, enqueue_job, process_job
 from app.services.policy import attach_approval, get_approval_count, get_required_approvals
@@ -159,6 +162,7 @@ def connector_status(
             last_sync_at=row.last_sync_at,
             last_error=row.last_error,
             use_simulated=row.use_simulated,
+            connected_url=(row.config or {}).get("connected_url"),
         )
         for row in rows
     ]
@@ -242,6 +246,47 @@ def sync_connector_splunk(
         run_now=run_now,
         connector_type="splunk",
     )
+
+
+# ── Connected Source Management ─────────────────────────────────────────────
+
+
+@router.post("/connectors/{connector_type}/connect", response_model=ConnectSourceResponse)
+def connect_connector_source(
+    connector_type: str,
+    body: ConnectSourceRequest,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(require_roles("admin")),
+) -> ConnectSourceResponse:
+    """Connect an external source URL to a connector for live scanning."""
+    tenant = ensure_tenant(db, principal.tenant_code)
+    try:
+        result = connect_source(db, tenant.id, connector_type, body.url)
+        return ConnectSourceResponse(**result)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/connectors/{connector_type}/connect", response_model=ConnectSourceResponse)
+def disconnect_connector_source(
+    connector_type: str,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(require_roles("admin")),
+) -> ConnectSourceResponse:
+    """Disconnect an external source from a connector."""
+    tenant = ensure_tenant(db, principal.tenant_code)
+    result = disconnect_source(db, tenant.id, connector_type)
+    return ConnectSourceResponse(**result)
+
+
+@router.get("/connectors/sources")
+def get_connector_sources(
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(require_roles("analyst", "auditor", "admin")),
+) -> dict:
+    """Return all currently connected source URLs across connectors."""
+    tenant = ensure_tenant(db, principal.tenant_code)
+    return get_all_connected_sources(db, tenant.id)
 
 
 @router.post("/worker/poll-once")

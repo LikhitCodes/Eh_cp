@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import GovernanceRule, ScanSchedule
+from app.models import ApiEndpoint, GovernanceRule, ScanSchedule
 from app.services.repository import ensure_default_policy, ensure_tenant
 
 
@@ -51,9 +51,44 @@ def _ensure_scan_schedules(db: Session, tenant_id: int) -> None:
     db.add_all(schedules)
 
 
+def _auto_connect_juiceshop(db: Session, tenant_id: int) -> None:
+    """Auto-connect Juice Shop as the default data source on first boot.
+    Only runs when no endpoints exist yet (fresh DB)."""
+    has_endpoints = db.scalar(select(ApiEndpoint).limit(1))
+    if has_endpoints:
+        return  # Data already exists — don't overwrite
+
+    from app.services.connectors import (
+        connect_source,
+        sync_github,
+        sync_kong,
+        sync_splunk,
+        sync_network,
+        sync_k8s,
+    )
+
+    # 1. Code Repository: actual GitHub repo link
+    connect_source(db, tenant_id, "github", "https://github.com/juice-shop/juice-shop")
+    # 2. API Gateway: actual public hosted Juice Shop instance
+    connect_source(db, tenant_id, "kong", "https://juice-shop.herokuapp.com")
+    # 3. SIEM / Threat Intel: realistic Splunk Cloud telemetry endpoint
+    connect_source(db, tenant_id, "splunk", "https://splunk-cloud.com/juice-shop-telemetry")
+    # Network Scanner and K8s Scanner are internal infrastructure probes (not external URL connectors)
+
+    # Sync all 5 connectors with Juice Shop data
+    tenant_code = settings.default_tenant_code
+    sync_github(db, tenant_code)
+    sync_kong(db, tenant_code)
+    sync_splunk(db, tenant_code)
+    sync_network(db, tenant_code)
+    sync_k8s(db, tenant_code)
+
+
 def bootstrap_defaults(db: Session) -> None:
     tenant = ensure_tenant(db, settings.default_tenant_code)
     ensure_default_policy(db, tenant.id)
     _ensure_governance_rules(db, tenant.id)
     _ensure_scan_schedules(db, tenant.id)
     db.commit()
+    _auto_connect_juiceshop(db, tenant.id)
+

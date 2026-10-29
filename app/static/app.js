@@ -58,6 +58,9 @@ const api = {
   syncSplunk: () => rq('/v1/connectors/splunk/sync', { method: 'POST' }),
   syncNetwork: () => rq('/v1/connectors/network/scan', { method: 'POST' }),
   syncK8s: () => rq('/v1/connectors/k8s/scan', { method: 'POST' }),
+  connectSource: (type, url) => rq(`/v1/connectors/${type}/connect`, { method: 'POST', body: { url } }),
+  disconnectSource: (type) => rq(`/v1/connectors/${type}/connect`, { method: 'DELETE' }),
+  connectorSources: () => rq('/v1/connectors/sources'),
   actions: (params = '') => rq('/v1/remediation/actions?' + params),
   createAction: (eid, type = 'quarantine', reason = 'High-risk zombie containment') => rq('/v1/remediation/actions', { method: 'POST', body: { endpoint_id: eid, action_type: type, reason } }),
   simulateAction: (aid) => rq(`/v1/remediation/actions/${aid}/simulate`, { method: 'POST' }),
@@ -299,11 +302,21 @@ window.addEventListener('hashchange', () => {
 // ─── Global Buttons ────────────────────────────────────────────────────────
 $('seedBtn').addEventListener('click', withBtn($('seedBtn'), 'Seeding...', async () => {
   await api.seed();
-  toast('Banking API scenario seeded', 'success');
+  currentDashboardSource = 'banking';
+  toast('Banking API scenario seeded (16 APIs added). Switched to Banking scope.', 'success');
   router.reload();
 }));
 
 $('refreshBtn').addEventListener('click', () => router.reload());
+
+let currentDashboardSource = 'juiceshop'; // 'juiceshop' (default), 'banking', 'all'
+
+function isJuiceShopEndpoint(e) {
+  const host = (e.host || '').toLowerCase();
+  const svc = (e.service_name || '').toLowerCase();
+  const path = (e.path || '').toLowerCase();
+  return host.includes('juice-shop') || svc.includes('juice-shop') || path.startsWith('/rest/') || path === '/ftp' || path === '/encryptionkeys';
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  PAGE: DASHBOARD
@@ -311,12 +324,30 @@ $('refreshBtn').addEventListener('click', () => router.reload());
 
 async function renderDashboard() {
   $('pageContent').innerHTML = `
+    <div class="source-banner">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Active Scope:</span>
+        <div class="source-pills">
+          <button class="source-pill ${currentDashboardSource === 'juiceshop' ? 'active' : ''}" data-src="juiceshop" id="pillJuice">
+            🧃 OWASP Juice Shop <span class="pill-badge" id="badgeJuiceCount">-</span>
+          </button>
+          <button class="source-pill ${currentDashboardSource === 'banking' ? 'active' : ''}" data-src="banking" id="pillBanking">
+            🏦 Banking Scenario <span class="pill-badge" id="badgeBankCount">-</span>
+          </button>
+          <button class="source-pill ${currentDashboardSource === 'all' ? 'active' : ''}" data-src="all" id="pillAll">
+            🌐 All Combined <span class="pill-badge" id="badgeAllCount">-</span>
+          </button>
+        </div>
+      </div>
+      <div id="dashSourceNotice" style="font-size:12px;color:var(--dim)"></div>
+    </div>
     <div class="metrics" id="dashMetrics">
       <div class="metric m-blue"><h4>Total APIs</h4><div class="value" id="mTotal">-</div><div class="sub">Discovered endpoints</div></div>
       <div class="metric m-red"><h4>High / Critical</h4><div class="value" id="mHigh">-</div><div class="sub">Requiring attention</div></div>
       <div class="metric m-orange"><h4>Zombies</h4><div class="value" id="mZombie">-</div><div class="sub">Undocumented &amp; active</div></div>
       <div class="metric m-green"><h4>Quarantined</h4><div class="value" id="mQuarantine">-</div><div class="sub">Contained threats</div></div>
     </div>
+    <div id="dashBankingAlert"></div>
     <div class="grid" style="margin-top:16px;">
       <div class="card s4">
         <div class="card-header"><h3><span class="dot" style="background:var(--red)"></span> Risk Distribution</h3></div>
@@ -360,37 +391,107 @@ async function renderDashboard() {
     ]);
     cachedEndpoints = endpoints;
 
-    const zombies = endpoints.filter(e => e.lifecycle_state === 'zombie').length;
-    animateValue($('mTotal'), report.totals.endpoints ?? 0);
-    animateValue($('mHigh'), report.totals.high_or_critical ?? 0);
-    animateValue($('mZombie'), zombies);
-    animateValue($('mQuarantine'), report.totals.quarantined ?? 0);
+    const juiceEndpoints = endpoints.filter(isJuiceShopEndpoint);
+    const bankEndpoints = endpoints.filter(e => !isJuiceShopEndpoint(e));
+
+    const jc = $('badgeJuiceCount'), bc = $('badgeBankCount'), ac = $('badgeAllCount');
+    if (jc) jc.textContent = juiceEndpoints.length;
+    if (bc) bc.textContent = bankEndpoints.length;
+    if (ac) ac.textContent = endpoints.length;
+
+    let displayEndpoints = endpoints;
+    if (currentDashboardSource === 'juiceshop') {
+      displayEndpoints = juiceEndpoints;
+    } else if (currentDashboardSource === 'banking') {
+      displayEndpoints = bankEndpoints;
+    }
+
+    // Source notice
+    const sn = $('dashSourceNotice');
+    if (sn) {
+      if (currentDashboardSource === 'juiceshop') {
+        sn.innerHTML = `<span style="color:var(--green)">●</span> Live Repo: <strong style="color:var(--ink)">juice-shop/juice-shop</strong> · 5 connectors synced · Real-time threat correlation`;
+      } else if (currentDashboardSource === 'banking') {
+        sn.innerHTML = `<span style="color:var(--orange)">●</span> Banking Scenario: <strong style="color:var(--ink)">default-bank</strong> · ${bankEndpoints.length} APIs (Wire transfer &amp; customer export threats)`;
+      } else {
+        sn.innerHTML = `<span style="color:var(--blue)">●</span> Combined View: ${endpoints.length} APIs across all connected sources and scenarios`;
+      }
+    }
+
+    // Empty state notice for banking scenario if not seeded
+    const ba = $('dashBankingAlert');
+    if (ba) {
+      if (currentDashboardSource === 'banking' && bankEndpoints.length === 0) {
+        ba.innerHTML = `<div style="background:rgba(217,119,6,0.08);border:1px solid rgba(217,119,6,0.25);border-radius:10px;padding:12px 16px;margin-top:12px;display:flex;align-items:center;justify-content:space-between">
+          <div><strong style="color:var(--orange)">Banking Scenario Not Seeded:</strong> No banking endpoints currently in the database.</div>
+          <button class="btn-primary btn-sm" onclick="$('seedBtn').click()">Seed Scenario</button>
+        </div>`;
+      } else {
+        ba.innerHTML = '';
+      }
+    }
+
+    // Wire source pill click listeners
+    document.querySelectorAll('.source-pill[data-src]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        currentDashboardSource = btn.dataset.src;
+        renderDashboard();
+      });
+    });
+
+    const totalCount = displayEndpoints.length;
+    const highCount = displayEndpoints.filter(e => ['high', 'critical'].includes((e.risk_severity || '').toLowerCase())).length;
+    const zombieCount = displayEndpoints.filter(e => e.lifecycle_state === 'zombie').length;
+    const quarantineCount = displayEndpoints.filter(e => e.is_quarantined).length;
+
+    animateValue($('mTotal'), totalCount);
+    animateValue($('mHigh'), highCount);
+    animateValue($('mZombie'), zombieCount);
+    animateValue($('mQuarantine'), quarantineCount);
 
     // Update sidebar badges
     const nb = $('navBadgeEndpoints');
     if (nb) nb.textContent = endpoints.length;
 
-    // Charts
-    if (chartData) {
-      const r = chartData.risk_distribution, l = chartData.lifecycle_breakdown, c = chartData.compliance;
-      charts.risk = mkDoughnut('riskChart', ['Critical', 'High', 'Medium', 'Low'], [r.critical, r.high, r.medium, r.low], [cColors.critical, cColors.high, cColors.medium, cColors.low]);
-      charts.lifecycle = mkDoughnut('lifecycleChart', ['Active', 'Deprecated', 'Orphaned', 'Zombie'], [l.active, l.deprecated, l.orphaned, l.zombie], [cColors.active, cColors.deprecated, cColors.orphaned, cColors.zombie]);
-      const scoreEl = $('compScore');
-      if (scoreEl) { scoreEl.textContent = c.score + '%'; scoreEl.style.color = c.score >= 80 ? 'var(--green)' : c.score >= 50 ? 'var(--orange)' : 'var(--red)'; }
-      charts.compliance = mkDoughnut('complianceChart', ['Compliant', 'Non-Compliant'], [c.compliant, c.non_compliant], ['#10b981', '#ef4444']);
-    }
+    // Charts based on displayEndpoints
+    const rDist = {
+      critical: displayEndpoints.filter(e => (e.risk_severity || '').toLowerCase() === 'critical').length,
+      high: displayEndpoints.filter(e => (e.risk_severity || '').toLowerCase() === 'high').length,
+      medium: displayEndpoints.filter(e => (e.risk_severity || '').toLowerCase() === 'medium').length,
+      low: displayEndpoints.filter(e => (e.risk_severity || '').toLowerCase() === 'low').length,
+    };
+    const lDist = {
+      active: displayEndpoints.filter(e => e.lifecycle_state === 'active').length,
+      deprecated: displayEndpoints.filter(e => e.lifecycle_state === 'deprecated').length,
+      orphaned: displayEndpoints.filter(e => e.lifecycle_state === 'orphaned').length,
+      zombie: displayEndpoints.filter(e => e.lifecycle_state === 'zombie').length,
+    };
+    const compCount = displayEndpoints.filter(e => !['high', 'critical'].includes((e.risk_severity || '').toLowerCase())).length;
+    const nonCompCount = displayEndpoints.length - compCount;
+    const compScore = displayEndpoints.length ? Math.round((compCount / displayEndpoints.length) * 100) : 100;
 
-    // Top Risks
-    if (report.top_risks?.length) {
-      $('dashTopRisks').innerHTML = report.top_risks.map((r, i) =>
-        `<div style="padding:8px 0;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;cursor:pointer" onclick="showEndpointById(${r.endpoint_id})">
+    charts.risk = mkDoughnut('riskChart', ['Critical', 'High', 'Medium', 'Low'], [rDist.critical, rDist.high, rDist.medium, rDist.low], [cColors.critical, cColors.high, cColors.medium, cColors.low]);
+    charts.lifecycle = mkDoughnut('lifecycleChart', ['Active', 'Deprecated', 'Orphaned', 'Zombie'], [lDist.active, lDist.deprecated, lDist.orphaned, lDist.zombie], [cColors.active, cColors.deprecated, cColors.orphaned, cColors.zombie]);
+    const scoreEl = $('compScore');
+    if (scoreEl) { scoreEl.textContent = compScore + '%'; scoreEl.style.color = compScore >= 80 ? 'var(--green)' : compScore >= 50 ? 'var(--orange)' : 'var(--red)'; }
+    charts.compliance = mkDoughnut('complianceChart', ['Compliant', 'Non-Compliant'], [compCount, nonCompCount], ['#10b981', '#ef4444']);
+
+    // Top Risks for displayEndpoints
+    const topRisks = displayEndpoints
+      .filter(e => (e.risk_score || 0) > 0)
+      .sort((a, b) => (b.risk_score || 0) - (a.risk_score || 0))
+      .slice(0, 5);
+
+    if (topRisks.length) {
+      $('dashTopRisks').innerHTML = topRisks.map((r, i) =>
+        `<div style="padding:8px 0;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;cursor:pointer" onclick="showEndpointById(${r.id})">
           <strong style="color:var(--red);min-width:20px">#${i + 1}</strong>
-          <span style="font-family:'JetBrains Mono';font-size:11px;flex:1">${r.identity}</span>
-          <span class="sev-${r.severity}" style="font-family:'JetBrains Mono'">${r.risk_score}</span>
+          <span style="font-family:'JetBrains Mono';font-size:11px;flex:1">${r.method} ${r.path}</span>
+          <span class="sev-${(r.risk_severity || 'medium').toLowerCase()}" style="font-family:'JetBrains Mono'">${r.risk_score ?? '-'}</span>
         </div>`
       ).join('');
     } else {
-      $('dashTopRisks').innerHTML = '<div class="empty-state"><div class="icon">📊</div><p>No risk data. Seed the scenario first.</p></div>';
+      $('dashTopRisks').innerHTML = '<div class="empty-state"><div class="icon">📊</div><p>No risk data for this scope.</p></div>';
     }
 
     // Recent Audit
@@ -405,7 +506,7 @@ async function renderDashboard() {
       const color = c.status === 'healthy' ? 'var(--green)' : c.status === 'error' ? 'var(--red)' : 'var(--dim)';
       return `<div class="connector-card" style="margin-bottom:6px">
         <span class="status-dot" style="background:${color}"></span>
-        <div class="info"><h5>${c.connector_type}</h5><p>${c.status} ${c.use_simulated ? '(simulated)' : ''} ${c.last_sync_at ? '· ' + fmtDate(c.last_sync_at) : ''}</p></div>
+        <div class="info"><h5>${c.connector_type}</h5><p>${c.status} ${c.connected_url ? '(connected)' : c.use_simulated ? '(simulated)' : ''} ${c.last_sync_at ? '· ' + fmtDate(c.last_sync_at) : ''}</p></div>
       </div>`;
     }).join('') || '<div class="empty-state"><p>No connectors.</p></div>';
 
@@ -419,9 +520,10 @@ async function renderDashboard() {
         </div>`;
     } else { $('dashMonitoring').innerHTML = '<div class="empty-state"><p>No monitoring data.</p></div>'; }
   } catch (e) {
-    $('pageContent').innerHTML = `<div class="empty-state"><div class="icon">⚡</div><p>Error loading dashboard: ${e.message}</p><p style="margin-top:8px">Click "Seed Scenario" to initialize demo data.</p></div>`;
+    $('pageContent').innerHTML = `<div class="empty-state"><div class="icon">⚡</div><p>Error loading dashboard: ${e.message}</p><p style="margin-top:8px">Try refreshing or click "Seed Scenario" for banking demo data.</p></div>`;
   }
 }
+
 
 async function showEndpointById(id) {
   let ep = cachedEndpoints.find(e => e.id === id);
@@ -437,6 +539,7 @@ async function renderEndpointsPage() {
   $('pageContent').innerHTML = `
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
       <div class="search-bar" style="flex:1;min-width:200px"><input type="text" id="epSearch" placeholder="Search endpoints..." /></div>
+      <select id="epSource" style="width:160px"><option value="">All Sources</option><option value="juiceshop" selected>🧃 Juice Shop</option><option value="banking">🏦 Banking Demo</option></select>
       <select id="epLifecycle" style="width:140px"><option value="">All Lifecycles</option><option value="active">Active</option><option value="deprecated">Deprecated</option><option value="orphaned">Orphaned</option><option value="zombie">Zombie</option></select>
       <select id="epSeverity" style="width:140px"><option value="">All Severities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>
       <button class="btn-secondary btn-sm" id="epFilterBtn">Apply</button>
@@ -445,9 +548,9 @@ async function renderEndpointsPage() {
       <div class="table-wrap">
         <table>
           <thead><tr>
-            <th style="width:40px">ID</th><th>Endpoint</th><th>Owner</th><th>Lifecycle</th><th>Risk</th><th>TLS</th><th>Auth</th><th>SIEM</th><th>Quarantined</th>
+            <th style="width:40px">ID</th><th>Endpoint</th><th>Source</th><th>Owner</th><th>Lifecycle</th><th>Risk</th><th>TLS</th><th>Auth</th><th>SIEM</th><th>Quarantined</th>
           </tr></thead>
-          <tbody id="epTableBody"><tr><td colspan="9" style="color:var(--muted)">Loading...</td></tr></tbody>
+          <tbody id="epTableBody"><tr><td colspan="10" style="color:var(--muted)">Loading...</td></tr></tbody>
         </table>
       </div>
       <div style="margin-top:10px;display:flex;justify-content:space-between;align-items:center">
@@ -457,6 +560,7 @@ async function renderEndpointsPage() {
 
   const loadEndpoints = async () => {
     const q = $('epSearch').value;
+    const src = $('epSource') ? $('epSource').value : '';
     const lc = $('epLifecycle').value;
     const sev = $('epSeverity').value;
     let params = '';
@@ -464,14 +568,22 @@ async function renderEndpointsPage() {
     if (lc) params += `&lifecycle=${lc}`;
     if (sev) params += `&severity=${sev}`;
     try {
-      const eps = await api.endpoints(params);
+      let eps = await api.endpoints(params);
       cachedEndpoints = eps;
+      if (src === 'juiceshop') {
+        eps = eps.filter(isJuiceShopEndpoint);
+      } else if (src === 'banking') {
+        eps = eps.filter(e => !isJuiceShopEndpoint(e));
+      }
       const tb = $('epTableBody');
-      if (!eps.length) { tb.innerHTML = '<tr><td colspan="9" class="empty-state">No endpoints found.</td></tr>'; $('epCount').textContent = '0 endpoints'; return; }
-      tb.innerHTML = eps.map(e => `
+      if (!eps.length) { tb.innerHTML = '<tr><td colspan="10" class="empty-state">No endpoints found for this filter.</td></tr>'; $('epCount').textContent = '0 endpoints'; return; }
+      tb.innerHTML = eps.map(e => {
+        const isJuice = isJuiceShopEndpoint(e);
+        return `
         <tr class="clickable" onclick='showEndpointById(${e.id})'>
           <td style="font-family:'JetBrains Mono';font-size:12px;color:var(--dim)">${e.id}</td>
           <td><div style="font-family:'JetBrains Mono';font-size:12px">${e.method} ${e.path}</div><div style="font-size:11px;color:var(--dim)">${e.host} · ${e.service_name || ''}</div></td>
+          <td>${isJuice ? '<span class="chip" style="font-size:9px;background:rgba(200,230,74,0.12);color:var(--accent)">JUICE-SHOP</span>' : '<span class="chip" style="font-size:9px;background:rgba(59,130,246,0.12);color:var(--blue)">BANKING</span>'}</td>
           <td>${e.owner_team || '<span style="color:var(--red);font-size:11px">unassigned</span>'}</td>
           <td>${stateChip(e.lifecycle_state)}</td>
           <td><span class="sev-${(e.risk_severity||'low').toLowerCase()}" style="font-family:'JetBrains Mono'">${e.risk_score ?? '-'}</span></td>
@@ -479,12 +591,14 @@ async function renderEndpointsPage() {
           <td>${authLabel(e.auth_type)}</td>
           <td>${e.seen_in_siem ? '<span style="color:var(--red)">threat</span>' : '<span style="color:var(--dim)">clear</span>'}</td>
           <td>${e.is_quarantined ? '<span style="color:var(--green)">yes</span>' : '<span style="color:var(--dim)">no</span>'}</td>
-        </tr>`).join('');
+        </tr>`;
+      }).join('');
       $('epCount').textContent = `${eps.length} endpoint${eps.length !== 1 ? 's' : ''}`;
     } catch (e) { toast(e.message, 'error'); }
   };
 
   $('epFilterBtn').addEventListener('click', loadEndpoints);
+  $('epSource').addEventListener('change', loadEndpoints);
   $('epSearch').addEventListener('keydown', e => { if (e.key === 'Enter') loadEndpoints(); });
   loadEndpoints();
 }
@@ -494,6 +608,18 @@ async function renderEndpointsPage() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function renderConnectorsPage() {
+  const connectable = new Set(['github', 'kong', 'splunk']);
+  const connectPlaceholders = {
+    github: 'e.g. https://github.com/juice-shop/juice-shop',
+    kong:   'e.g. https://juice-shop.herokuapp.com',
+    splunk: 'e.g. https://splunk-cloud.com/juice-shop-telemetry',
+  };
+  const connectLabels = {
+    github: '📁 Connect Repository',
+    kong:   '🌐 Connect Gateway URL',
+    splunk: '🚨 Connect SIEM Ingestion URL',
+  };
+
   const syncFns = {
     kong: { fn: api.syncKong, label: 'API Gateway', desc: 'Kong Gateway — discovers endpoints from API traffic, auth policies, rate limits' },
     github: { fn: api.syncGithub, label: 'Code Repository', desc: 'GitHub/GitLab — matches endpoints against OpenAPI specs and service code' },
@@ -518,6 +644,28 @@ async function renderConnectorsPage() {
             </div>
             <button class="btn-secondary btn-sm" id="syncBtn_${key}">Sync</button>
           </div>
+          ${connectable.has(key) ? `
+          <div id="connSource_${key}" style="margin-top:10px;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:8px;">
+            <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">${connectLabels[key] || 'Connect Source'}</div>
+            <div id="connSourceConnected_${key}" style="display:none;">
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span style="color:var(--green);font-size:16px">●</span>
+                <a id="connSourceUrl_${key}" href="#" target="_blank" style="font-size:12px;color:var(--cyan);font-family:'JetBrains Mono',monospace;word-break:break-all;flex:1;"></a>
+                <button class="btn-secondary btn-sm" id="disconnectBtn_${key}" style="font-size:10px;padding:3px 8px;color:var(--red);border-color:var(--red);">Disconnect</button>
+              </div>
+            </div>
+            <div id="connSourceForm_${key}">
+              <div style="display:flex;gap:6px;">
+                <input type="text" id="connSourceInput_${key}" placeholder="${connectPlaceholders[key] || 'Enter source URL...'}" style="flex:1;font-size:12px;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-family:'JetBrains Mono',monospace;">
+                <button class="btn-primary btn-sm" id="connectBtn_${key}" style="font-size:11px;padding:5px 12px;white-space:nowrap;">Connect</button>
+              </div>
+            </div>
+          </div>` : `
+          <div style="margin-top:10px;padding:9px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;display:flex;align-items:center;gap:8px;font-size:11px;">
+            <span style="color:var(--green);font-size:14px">●</span>
+            <span style="font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)">Target Probe:</span>
+            <span style="font-family:'JetBrains Mono',monospace;color:var(--ink)">${key === 'network' ? 'VPC Traffic Mirror (10.0.0.0/16 · prod-mesh)' : 'juice-shop-ns (cluster.local · Ingress)'}</span>
+          </div>`}
         </div>`).join('')}
     </div>
     <div class="card" style="margin-top:14px">
@@ -525,37 +673,110 @@ async function renderConnectorsPage() {
       <div id="connLog" class="log" style="max-height:300px">No sync activity yet.</div>
     </div>`;
 
-  // Load statuses
+  const log = (msg) => { const el = $('connLog'); el.textContent = `[${new Date().toLocaleTimeString()}] ${msg}\n` + el.textContent; };
+
+  // ── Helper: update source UI for a connector ──
+  const showConnectedSource = (key, url) => {
+    const form = $(`connSourceForm_${key}`);
+    const connected = $(`connSourceConnected_${key}`);
+    const urlEl = $(`connSourceUrl_${key}`);
+    if (!form || !connected || !urlEl) return;
+    if (url) {
+      form.style.display = 'none';
+      connected.style.display = 'block';
+      urlEl.textContent = url;
+      urlEl.href = url.startsWith('http') ? url : `https://${url}`;
+    } else {
+      form.style.display = 'block';
+      connected.style.display = 'none';
+      urlEl.textContent = '';
+      urlEl.href = '#';
+    }
+  };
+
+  // ── Load connector statuses + connected sources ──
   try {
     const statuses = await api.connectors();
     for (const s of statuses) {
       const dot = $(`connDot_${s.connector_type}`);
       const meta = $(`connMeta_${s.connector_type}`);
       if (dot) dot.style.background = s.status === 'healthy' ? 'var(--green)' : s.status === 'error' ? 'var(--red)' : 'var(--dim)';
-      if (meta) meta.textContent = `${s.status} ${s.use_simulated ? '(simulated)' : ''} ${s.last_sync_at ? '· Last sync: ' + fmtDate(s.last_sync_at) : '· Never synced'}`;
+      if (meta) {
+        let label = s.status;
+        if (s.connected_url) label += ' (connected)';
+        else if (s.connector_type === 'network' || s.connector_type === 'k8s') label += ' (active probe)';
+        else if (s.use_simulated) label += ' (simulated)';
+        label += s.last_sync_at ? ' · Last sync: ' + fmtDate(s.last_sync_at) : ' · Never synced';
+        meta.textContent = label;
+      }
+      // Show connected source if present
+      if (s.connected_url && connectable.has(s.connector_type)) {
+        showConnectedSource(s.connector_type, s.connected_url);
+      }
     }
   } catch (_) {}
 
-  const log = (msg) => { const el = $('connLog'); el.textContent = `[${new Date().toLocaleTimeString()}] ${msg}\n` + el.textContent; };
+  // ── Wire up Connect / Disconnect buttons ──
+  for (const key of connectable) {
+    const connectBtn = $(`connectBtn_${key}`);
+    const disconnectBtn = $(`disconnectBtn_${key}`);
+    const input = $(`connSourceInput_${key}`);
 
-  // Individual sync buttons
+    if (connectBtn && input) {
+      connectBtn.addEventListener('click', withBtn(connectBtn, 'Connecting...', async () => {
+        const url = input.value.trim();
+        if (!url) { toast('Please enter a source URL', 'error'); return; }
+        log(`Connecting ${syncFns[key].label} to ${url}...`);
+        await api.connectSource(key, url);
+        showConnectedSource(key, url);
+        log(`✓ ${syncFns[key].label} connected to ${url}`);
+        toast(`${syncFns[key].label} connected — click Sync to scan`, 'success');
+        const meta = $(`connMeta_${key}`);
+        if (meta) meta.textContent = 'connected · Ready to sync';
+      }));
+      // Also connect on Enter key
+      input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') connectBtn.click();
+      });
+    }
+
+    if (disconnectBtn) {
+      disconnectBtn.addEventListener('click', async () => {
+        disconnectBtn.textContent = '...';
+        try {
+          await api.disconnectSource(key);
+          showConnectedSource(key, null);
+          log(`✗ ${syncFns[key].label} disconnected`);
+          toast(`${syncFns[key].label} disconnected`, 'info');
+          const meta = $(`connMeta_${key}`);
+          if (meta) meta.textContent = 'idle (simulated) · Not connected';
+          const dot = $(`connDot_${key}`);
+          if (dot) dot.style.background = 'var(--dim)';
+        } catch (e) { toast(e.message, 'error'); }
+        disconnectBtn.textContent = 'Disconnect';
+      });
+    }
+  }
+
+  // ── Individual sync buttons ──
   for (const [key, cfg] of Object.entries(syncFns)) {
     const btn = $(`syncBtn_${key}`);
     if (btn) {
       btn.addEventListener('click', withBtn(btn, 'Syncing...', async () => {
         log(`Starting ${cfg.label} sync...`);
         const result = await cfg.fn();
-        log(`${cfg.label}: ${result.status} — ${result.processed} endpoints processed${result.used_simulated ? ' (simulated)' : ''}`);
+        const source = result.connected_url ? `from ${result.connected_url}` : (result.used_simulated ? '(simulated)' : '');
+        log(`${cfg.label}: ${result.status} — ${result.processed} endpoints processed ${source}`);
         toast(`${cfg.label} sync complete`, 'success');
         const dot = $(`connDot_${key}`);
         if (dot) dot.style.background = 'var(--green)';
         const meta = $(`connMeta_${key}`);
-        if (meta) meta.textContent = `healthy · Last sync: ${fmtDate(new Date())}`;
+        if (meta) meta.textContent = `healthy${result.connected_url ? ' (connected)' : ''} · Last sync: ${fmtDate(new Date())}`;
       }));
     }
   }
 
-  // Sync all
+  // ── Sync all ──
   $('syncAllBtn').addEventListener('click', withBtn($('syncAllBtn'), 'Syncing All...', async () => {
     for (const [key, cfg] of Object.entries(syncFns)) {
       log(`Syncing ${cfg.label}...`);
@@ -1217,7 +1438,11 @@ let demoRunning = false, demoAbort = false;
 
 const DEMO_STEPS = [
   { duration: 4000, page: 'dashboard', narration: "🚨 ALERT: We just found 4 zombie APIs in your bank — unauthenticated, undocumented, handling HIGH-SENSITIVITY customer data with ZERO encryption. One is an active wire-transfer endpoint. Estimated exposure: ₹38 LAKH in regulatory fines alone. Let's fix this in 90 seconds." },
-  { duration: 10000, page: 'dashboard', narration: "STEP 1: DISCOVERY — API Sentinel seeds your infrastructure. 5 connectors pull data from API Gateway, Code Repos, SIEM, Network traffic, and K8s clusters...", action: async () => { await api.seed(); toast('Infrastructure scanned: 16+ APIs discovered', 'success'); } },
+  { duration: 10000, page: 'dashboard', narration: "STEP 1: DISCOVERY — API Sentinel seeds your infrastructure. 5 connectors pull data from API Gateway, Code Repos, SIEM, Network traffic, and K8s clusters...", action: async () => {
+    currentDashboardSource = 'banking';
+    await api.seed();
+    toast('Infrastructure scanned: 16+ APIs discovered', 'success');
+  } },
   { duration: 12000, page: 'connectors', narration: "STEP 2: MULTI-SOURCE CORRELATION — Cross-referencing gateway traffic with code specs and SIEM alerts. Watch each connector sync in real-time...", action: async () => {
     for (const [name, fn] of [['Kong', api.syncKong], ['GitHub', api.syncGithub], ['Splunk', api.syncSplunk], ['Network', api.syncNetwork], ['K8s', api.syncK8s]]) {
       await fn(); toast(`${name} sync complete`, 'success');
