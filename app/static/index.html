@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>API Sentinel — Zombie API Discovery &amp; Defence</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet"/>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <style>
+:root{
+  --bg:#f2f1ec;--surface:#ffffff;--surface2:#f7f7f2;--surface3:#eeeee6;
+  --glass:rgba(255,255,255,.95);--border:#e0ded6;--border2:#d0cec6;
+  --ink:#1a1a1a;--muted:#6b6b6b;--dim:#9a9a96;
+  --red:#dc2626;--red-glow:rgba(220,38,38,.07);
+  --orange:#d97706;--orange-glow:rgba(217,119,6,.07);
+  --green:#059669;--green-glow:rgba(5,150,105,.07);
+  --blue:#2563eb;--blue-glow:rgba(37,99,235,.07);
+  --purple:#7c3aed;--purple-glow:rgba(124,58,237,.07);
+  --cyan:#0891b2;--cyan-glow:rgba(8,145,178,.06);
+  --pink:#db2777;
+  --accent:#c8e64a;
+  --gradient:linear-gradient(135deg,#c8e64a 0%,#b5d840 50%,#9ec435 100%);
+  --sidebar-w:240px;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'Inter',system-ui,sans-serif;color:var(--ink);background:var(--bg);min-height:100vh;overflow-x:hidden;}
+
+/* ─── LAYOUT ─── */
+.app{display:flex;min-height:100vh;}
+
+/* ─── SIDEBAR ─── */
+.sidebar{width:var(--sidebar-w);background:#1a1a1a;border-right:1px solid #2a2a2a;display:flex;flex-direction:column;position:fixed;top:0;bottom:0;z-index:100;transition:transform .3s;color:#d0d0d0;}
+.sidebar-brand{padding:20px;border-bottom:1px solid #2a2a2a;}
+.sidebar-brand h1{font-size:15px;font-weight:800;background:var(--gradient);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;}
+.sidebar-brand p{font-size:10px;color:#666;margin-top:2px;letter-spacing:.04em;text-transform:uppercase;}
+.sidebar-nav{flex:1;padding:12px 0;overflow-y:auto;}
+.nav-section{padding:0 16px;margin-top:16px;margin-bottom:6px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#555;}
+.nav-item{display:flex;align-items:center;gap:10px;padding:9px 16px;margin:1px 8px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;color:#888;transition:all .15s;text-decoration:none;}
+.nav-item:hover{background:#252525;color:#e0e0e0;}
+.nav-item.active{background:rgba(200,230,74,.1);color:var(--accent);font-weight:600;}
+.nav-item .icon{width:18px;text-align:center;font-size:14px;}
+.nav-item .badge{margin-left:auto;background:var(--red);color:#fff;font-size:10px;font-weight:700;padding:1px 6px;border-radius:10px;min-width:18px;text-align:center;}
+.sidebar-footer{padding:16px;border-top:1px solid #2a2a2a;}
+.sidebar-footer .user{display:flex;align-items:center;gap:8px;font-size:12px;color:#ccc;}
+.sidebar-footer .avatar{width:28px;height:28px;border-radius:50%;background:var(--gradient);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#1a1a1a;}
+
+/* ─── MAIN ─── */
+.main{margin-left:var(--sidebar-w);flex:1;min-height:100vh;}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:50;}
+.topbar h2{font-size:16px;font-weight:700;}
+.topbar-actions{display:flex;gap:8px;align-items:center;}
+.page-content{padding:24px;}
+
+/* ─── CARDS ─── */
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px;}
+.card{grid-column:span 12;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px;transition:all .2s;box-shadow:0 1px 3px rgba(0,0,0,.03);}
+.card:hover{border-color:var(--border2);box-shadow:0 4px 12px rgba(0,0,0,.05);}
+.card.s6{grid-column:span 6;}.card.s4{grid-column:span 4;}.card.s3{grid-column:span 3;}.card.s8{grid-column:span 8;}
+.card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}
+.card-header h3{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);display:flex;align-items:center;gap:6px;}
+.card-header h3 .dot{width:6px;height:6px;border-radius:50%;display:inline-block;}
+
+/* ─── BUTTONS ─── */
+button,.btn{border:0;border-radius:8px;padding:8px 14px;font-family:inherit;font-weight:600;font-size:12px;cursor:pointer;transition:all .2s;display:inline-flex;align-items:center;gap:6px;text-decoration:none;}
+button:hover,.btn:hover{transform:translateY(-1px);box-shadow:0 4px 16px rgba(0,0,0,.08);}
+button:disabled{opacity:.5;cursor:not-allowed;transform:none!important;}
+.btn-primary{color:#1a1a1a;background:var(--accent);}
+.btn-secondary{color:var(--ink);background:var(--surface);border:1px solid var(--border);}
+.btn-danger{color:#fff;background:linear-gradient(135deg,#dc2626,#ef4444);}
+.btn-success{color:#fff;background:linear-gradient(135deg,#059669,#10b981);}
+.btn-sm{padding:5px 10px;font-size:11px;}
+.btn-demo{color:#1a1a1a;background:var(--accent);animation:pulse-glow 2s infinite;}
+@keyframes pulse-glow{0%,100%{box-shadow:0 0 0 0 rgba(200,230,74,.3);}50%{box-shadow:0 0 16px 2px rgba(200,230,74,.2);}}
+
+/* ─── METRICS ─── */
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;}
+.metric{border-radius:12px;padding:14px;border:1px solid transparent;}
+.metric h4{font-size:10px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;opacity:.85;margin-bottom:6px;}
+.metric .value{font-size:28px;font-weight:800;font-family:'JetBrains Mono',monospace;line-height:1;}
+.metric .sub{font-size:11px;color:var(--muted);margin-top:4px;}
+.m-blue{background:rgba(37,99,235,.05);border-color:rgba(37,99,235,.12);color:var(--blue);}
+.m-red{background:rgba(220,38,38,.05);border-color:rgba(220,38,38,.12);color:var(--red);}
+.m-orange{background:rgba(217,119,6,.05);border-color:rgba(217,119,6,.12);color:var(--orange);}
+.m-green{background:rgba(5,150,105,.05);border-color:rgba(5,150,105,.12);color:var(--green);}
+.m-purple{background:rgba(124,58,237,.05);border-color:rgba(124,58,237,.12);color:var(--purple);}
+.m-cyan{background:rgba(8,145,178,.05);border-color:rgba(8,145,178,.12);color:var(--cyan);}
+
+/* ─── TABLES ─── */
+.table-wrap{overflow-x:auto;}
+table{width:100%;border-collapse:collapse;}
+th,td{text-align:left;padding:10px 12px;font-size:13px;border-bottom:1px solid var(--border);}
+th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em;position:sticky;top:0;background:var(--surface);}
+tr{transition:background .15s;}tr:hover{background:rgba(200,230,74,.04);}
+tr.clickable{cursor:pointer;}tr.clickable:hover{background:rgba(200,230,74,.08);}
+
+/* ─── CHIPS ─── */
+.chip{font-family:'JetBrains Mono',monospace;display:inline-block;border-radius:20px;padding:3px 10px;font-size:10px;font-weight:600;}
+.s-zombie{background:rgba(220,38,38,.08);color:var(--red);border:1px solid rgba(220,38,38,.2);}
+.s-orphaned{background:rgba(217,119,6,.08);color:var(--orange);border:1px solid rgba(217,119,6,.2);}
+.s-active{background:rgba(5,150,105,.08);color:var(--green);border:1px solid rgba(5,150,105,.2);}
+.s-deprecated{background:rgba(124,58,237,.08);color:var(--purple);border:1px solid rgba(124,58,237,.2);}
+.sev-critical,.sev-high{color:var(--red);font-weight:700;}
+.sev-medium{color:var(--orange);font-weight:700;}
+.sev-low{color:var(--green);font-weight:700;}
+
+/* ─── FORMS ─── */
+.form-group{margin-bottom:14px;}
+.form-group label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin-bottom:4px;}
+input,select,textarea{width:100%;padding:9px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--ink);font-family:inherit;font-size:13px;outline:none;transition:border-color .2s;}
+input:focus,select:focus,textarea:focus{border-color:var(--accent);}
+textarea{resize:vertical;min-height:80px;}
+.input-row{display:flex;gap:10px;}
+.input-row>*{flex:1;}
+.search-bar{position:relative;}
+.search-bar input{padding-left:36px;}
+.search-bar::before{content:'🔍';position:absolute;left:12px;top:50%;transform:translateY(-50%);font-size:13px;}
+
+/* ─── CHART ─── */
+.chart-box{position:relative;height:200px;}
+
+/* ─── MODAL ─── */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.35);backdrop-filter:blur(4px);z-index:1000;display:none;align-items:center;justify-content:center;}
+.modal-overlay.open{display:flex;}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:16px;width:min(720px,92vw);max-height:85vh;overflow-y:auto;padding:24px;position:relative;box-shadow:0 24px 48px rgba(0,0,0,.1);}
+.modal-close{position:absolute;top:14px;right:14px;background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;padding:4px 8px;}
+.modal h2{font-size:17px;font-weight:700;margin-bottom:4px;}
+.modal .subtitle{color:var(--muted);font-size:12px;margin-bottom:16px;}
+.modal-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px;}
+.modal-stat{background:var(--surface2);border-radius:8px;padding:10px;border:1px solid var(--border);}
+.modal-stat label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);display:block;margin-bottom:3px;}
+.modal-stat .val{font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;}
+.playbook-step{padding:8px 12px;background:var(--surface2);border-radius:6px;margin-bottom:5px;font-size:12px;border-left:3px solid var(--accent);}
+.playbook-step.critical{border-left-color:var(--red);}
+
+/* ─── TOAST ─── */
+#toastContainer{position:fixed;top:16px;right:16px;z-index:9999;display:flex;flex-direction:column;gap:6px;}
+.toast{padding:10px 16px;border-radius:10px;font-size:12px;font-weight:500;color:#fff;box-shadow:0 6px 20px rgba(0,0,0,.15);animation:toastIn .3s ease;max-width:360px;border:1px solid rgba(255,255,255,.1);}
+.toast.success{background:rgba(5,150,105,.92);}.toast.error{background:rgba(220,38,38,.92);}.toast.info{background:rgba(37,99,235,.92);}.toast.warning{background:rgba(217,119,6,.92);}
+@keyframes toastIn{from{opacity:0;transform:translateX(30px);}to{opacity:1;transform:translateX(0);}}
+
+/* ─── NARRATION BAR ─── */
+#narrationBar{position:fixed;bottom:0;left:var(--sidebar-w);right:0;z-index:999;background:linear-gradient(135deg,rgba(26,26,26,.96),rgba(40,40,40,.96));backdrop-filter:blur(12px);border-top:1px solid #333;padding:12px 20px;display:none;align-items:center;gap:14px;}
+#narrationBar.active{display:flex;}
+#narrationBar .step-indicator{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--accent);min-width:50px;}
+#narrationBar .narration-text{font-size:13px;font-weight:500;flex:1;line-height:1.4;color:#e0e0e0;}
+#narrationBar .progress-bar{height:3px;background:#333;border-radius:2px;flex:0 0 100px;}
+#narrationBar .progress-fill{height:100%;background:var(--gradient);border-radius:2px;transition:width .3s;}
+#demoTimer{font-family:'JetBrains Mono',monospace;font-size:11px;color:#888;min-width:36px;text-align:right;}
+
+/* ─── LOG ─── */
+.log{border-radius:10px;background:#1a1a1a;border:1px solid #2a2a2a;color:var(--accent);padding:12px;font-family:'JetBrains Mono',monospace;font-size:11px;max-height:500px;overflow:auto;white-space:pre-wrap;line-height:1.6;}
+
+/* ─── ROI ─── */
+.roi-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
+.roi-item{text-align:center;padding:14px 8px;background:var(--surface2);border-radius:10px;border:1px solid var(--border);}
+.roi-item .amount{font-size:18px;font-weight:800;font-family:'JetBrains Mono',monospace;}
+.roi-item .label{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:4px;}
+.roi-total{text-align:center;margin-top:10px;padding:16px;background:linear-gradient(135deg,rgba(200,230,74,.08),rgba(5,150,105,.08));border-radius:12px;border:1px solid rgba(200,230,74,.25);}
+.roi-total .amount{font-size:26px;font-weight:800;color:var(--green);font-family:'JetBrains Mono',monospace;}
+
+/* ─── DETAIL SECTIONS ─── */
+.detail-section{margin-top:16px;padding:16px;background:var(--surface2);border-radius:10px;border:1px solid var(--border);}
+.detail-section h4{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin-bottom:10px;}
+.factor-bar{display:flex;align-items:center;gap:8px;padding:4px 0;}
+.factor-bar .name{font-size:11px;color:var(--muted);min-width:80px;text-transform:uppercase;}
+.factor-bar .bar{flex:1;height:6px;background:var(--surface3);border-radius:3px;overflow:hidden;}
+.factor-bar .fill{height:100%;border-radius:3px;transition:width .4s;}
+.factor-bar .pts{font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;min-width:36px;text-align:right;}
+
+/* ─── CONNECTOR CARD ─── */
+.connector-card{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;display:flex;align-items:center;gap:12px;}
+.connector-card .status-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
+.connector-card .info{flex:1;}
+.connector-card .info h5{font-size:13px;font-weight:600;margin-bottom:2px;}
+.connector-card .info p{font-size:11px;color:var(--dim);}
+
+/* ─── EMPTY STATE ─── */
+.empty-state{text-align:center;padding:40px 20px;color:var(--dim);}
+.empty-state .icon{font-size:36px;margin-bottom:8px;}
+.empty-state p{font-size:13px;margin-top:4px;}
+
+/* ─── RESPONSIVE ─── */
+@media(max-width:1100px){.card.s6,.card.s4,.card.s3,.card.s8{grid-column:span 12;}.metrics{grid-template-columns:repeat(2,1fr);}}
+@media(max-width:768px){.sidebar{transform:translateX(-100%);}.sidebar.open{transform:translateX(0);}.main{margin-left:0;}}
+  </style>
+</head>
+<body>
+<div class="app">
+  <!-- SIDEBAR -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <h1>API Sentinel</h1>
+      <p>Zombie API Defence Platform</p>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-section">Overview</div>
+      <a class="nav-item active" data-page="dashboard"><span class="icon">📊</span> Dashboard</a>
+
+      <div class="nav-section">Discover</div>
+      <a class="nav-item" data-page="endpoints"><span class="icon">🔗</span> Endpoints <span class="badge" id="navBadgeEndpoints">0</span></a>
+      <a class="nav-item" data-page="connectors"><span class="icon">🔌</span> Connectors</a>
+      <a class="nav-item" data-page="monitoring"><span class="icon">📡</span> Monitoring</a>
+
+      <div class="nav-section">Respond</div>
+      <a class="nav-item" data-page="cases"><span class="icon">📁</span> Cases</a>
+      <a class="nav-item" data-page="remediation"><span class="icon">🛡️</span> Remediation</a>
+
+      <div class="nav-section">Govern</div>
+      <a class="nav-item" data-page="governance"><span class="icon">📋</span> Governance</a>
+      <a class="nav-item" data-page="reports"><span class="icon">📈</span> Reports &amp; ROI</a>
+      <a class="nav-item" data-page="audit"><span class="icon">🔒</span> Audit Trail</a>
+      <a class="nav-item" data-page="architecture"><span class="icon">🏗️</span> Architecture</a>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="user"><div class="avatar">A</div><div><div style="font-weight:600;font-size:12px;">Admin</div><div style="font-size:10px;color:var(--dim);">admin, analyst, approver</div></div></div>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <div class="main">
+    <div class="topbar">
+      <h2 id="pageTitle">Dashboard</h2>
+      <div class="topbar-actions">
+        <button class="btn-demo btn-sm" id="demoBtn">▶ 90s Demo</button>
+        <button class="btn-primary btn-sm" id="seedBtn">Seed Scenario</button>
+        <button class="btn-secondary btn-sm" id="refreshBtn">↻ Refresh</button>
+      </div>
+    </div>
+    <div class="page-content" id="pageContent"></div>
+  </div>
+</div>
+
+<!-- MODAL -->
+<div id="modalOverlay" class="modal-overlay">
+  <div class="modal"><button class="modal-close" id="modalClose">✕</button><h2 id="modalTitle"></h2><div id="modalSubtitle" class="subtitle"></div><div id="modalBody"></div></div>
+</div>
+
+<!-- NARRATION BAR -->
+<div id="narrationBar">
+  <div class="step-indicator" id="stepIndicator">1/8</div>
+  <div class="narration-text" id="narrationText"></div>
+  <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+  <div id="demoTimer">90s</div>
+  <button class="btn-secondary btn-sm" id="stopDemo">Stop</button>
+</div>
+
+<div id="toastContainer"></div>
+<script src="/static/app.js?v=3"></script>
+</body>
+</html>

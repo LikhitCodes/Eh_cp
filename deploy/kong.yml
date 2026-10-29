@@ -1,0 +1,12 @@
+_format_version: "3.0"
+
+services:
+  - name: sample-bank-service
+    url: http://httpbin.org
+    routes:
+      - name: sample-bank-route
+        paths:
+          - /bank
+        methods:
+          - GET
+          - POST

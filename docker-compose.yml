@@ -1,0 +1,75 @@
+name: api-sentinel
+
+services:
+  # ----------------------------------------------------------------
+  # App — production FastAPI service
+  # ----------------------------------------------------------------
+  app:
+    build:
+      context: .
+      target: prod
+    image: api-sentinel:prod
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8899:8899"
+    environment:
+      PYTHONPATH: /app
+      SENTINEL_DATABASE_URL: "postgresql+psycopg2://api_sentinel:api_sentinel@postgres:5432/api_sentinel"
+      SENTINEL_AUTO_CREATE_SCHEMA: "true"
+      SENTINEL_AUTH_REQUIRED: "true"
+      SENTINEL_AUTH_ALLOW_INSECURE_DEV_TOKENS: "false"
+      SENTINEL_AUTH_REQUIRE_VERIFIED_JWT: "true"
+      SENTINEL_AUTH_ENFORCE_MAPPED_ROLES: "true"
+      SENTINEL_CONNECTOR_SIMULATED_FALLBACK: "false"
+      SENTINEL_OLLAMA_BASE_URL: "http://ollama:11434"
+    volumes:
+      - sentinel_app_data:/app/data
+    command: >
+      sh -c "alembic upgrade head &&
+             gunicorn -k uvicorn.workers.UvicornWorker -w 2 -b 0.0.0.0:8899 app.main:app"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8899/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ----------------------------------------------------------------
+  # PostgreSQL — persistent data store
+  # ----------------------------------------------------------------
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: api_sentinel
+      POSTGRES_USER: api_sentinel
+      POSTGRES_PASSWORD: api_sentinel
+    ports:
+      - "5432:5432"
+    volumes:
+      - sentinel_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U api_sentinel -d api_sentinel"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+
+  # ----------------------------------------------------------------
+  # Ollama — optional local LLM inference (start with --profile ai)
+  # ----------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - sentinel_ollama_data:/root/.ollama
+    profiles:
+      - ai
+
+volumes:
+  sentinel_app_data:
+  sentinel_pg_data:
+  sentinel_ollama_data:

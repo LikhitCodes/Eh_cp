@@ -1,0 +1,37 @@
+{
+  "realm": "api-sentinel",
+  "enabled": true,
+  "roles": {
+    "realm": [
+      {"name": "admin"},
+      {"name": "analyst"},
+      {"name": "approver"},
+      {"name": "auditor"}
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "api-sentinel",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": ["*"],
+      "protocolMappers": [
+        {
+          "name": "audience-api-sentinel",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "api-sentinel",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ]
+}

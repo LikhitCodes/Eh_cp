@@ -1,0 +1,51 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Databases
+*.db
+*.sqlite3
+
+# Environment
+.env
+!.env.dev
+!.env.prod
+!.env.test
+!.env.launch
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Claude Code
+.claude/
+
+# Unpacked PPTX artifacts
+unpacked/
+
+# Submission files (keep in Google Drive, not git)
+*.pptx
+
+# Thumbnails and generated images
+youtube_thumbnail.png
+
+# Logs
+*.log
+/tmp/
